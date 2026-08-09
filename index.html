@@ -91,7 +91,6 @@
     box-shadow:0 1px 0 rgba(0,0,0,0.04);
     background-size:cover; background-position:center;
     transform:translateY(-50%);
-    transition:width .18s ease, height .18s ease, opacity .18s ease, filter .18s ease;
   }
   .photo .cap{position:absolute; inset:0; background:rgba(0,0,0,0.0);}
   .date-pill{
@@ -236,6 +235,10 @@ let baselineLR = null;
 let baselineFB = null;
 let rawLR = 0;
 let rawFB = 0;
+let calibrating = false;
+let calibSamples = [];
+const CALIB_WINDOW_MS = 500;
+let calibStartTime = 0;
 
 // zoom step debouncing (hysteresis so it doesn't flicker at the boundary)
 const ZOOM_ENTER = 13;   // deg needed to trigger a step
@@ -289,10 +292,12 @@ function updateTiltStatus(){
     tiltStatusEl.textContent = 'tilt: off (arrow keys)';
     return;
   }
+  if(baselineLR === null){
+    tiltStatusEl.textContent = calibrating ? 'tilt: calibrating, hold still…' : 'tilt: waiting for landscape…';
+    return;
+  }
   const sinceSignal = performance.now() - lastMotionEventTime;
-  if(lastMotionEventTime === 0){
-    tiltStatusEl.textContent = 'tilt: waiting for signal…';
-  } else if(sinceSignal > 1200){
+  if(sinceSignal > 1200){
     tiltStatusEl.textContent = 'tilt: no signal — tap to inspect';
   } else {
     tiltStatusEl.textContent = 'tilt: live · tap to inspect';
@@ -380,27 +385,39 @@ function onDeviceOrientation(e){
   if(e.beta === null || e.gamma === null) return;
   lastMotionEventTime = performance.now();
 
-  // Raw device axes, used directly (no screen-orientation-angle remapping —
-  // that turned out to be unreliable across mobile browsers/webviews).
-  // gamma = phone rolled left/right along its long axis -> left-right tilt
-  // beta  = phone tipped toward/away from you            -> front-back tilt
   const lr = e.gamma;
   const fb = e.beta;
-
   rawLR = lr;
   rawFB = fb;
 
-  // first reading becomes the neutral baseline — however you're holding
-  // the phone right now counts as "centered"
-  if(baselineLR === null){ baselineLR = lr; baselineFB = fb; }
+  const isLandscape = window.innerWidth > window.innerHeight;
+
+  if(baselineLR === null){
+    if(!isLandscape){ return; } // don't even start calibrating until rotated
+    if(!calibrating){
+      calibrating = true;
+      calibSamples = [];
+      calibStartTime = performance.now();
+    }
+    calibSamples.push([lr, fb]);
+    if(performance.now() - calibStartTime >= CALIB_WINDOW_MS){
+      const n = calibSamples.length;
+      baselineLR = calibSamples.reduce((s,p)=>s+p[0],0) / n;
+      baselineFB = calibSamples.reduce((s,p)=>s+p[1],0) / n;
+      calibrating = false;
+    }
+    tiltLR = 0; tiltFB = 0; // hold still — no scrolling while calibrating
+    return;
+  }
 
   tiltLR = clamp(lr - baselineLR, -90, 90);
   tiltFB = clamp(fb - baselineFB, -90, 90);
 }
 
 function recalibrate(){
-  baselineLR = rawLR;
-  baselineFB = rawFB;
+  baselineLR = null; // re-enter the averaging-window flow on next reading
+  baselineFB = null;
+  calibrating = false;
   tiltLR = 0;
   tiltFB = 0;
 }
@@ -547,36 +564,85 @@ function renderZoomState(){
   }
 }
 
+// Card sizing tiers pulled from the Figma design: center card is largest,
+// each ring out shrinks — cards sit edge-to-edge like a real contiguous
+// strip of photos, not independently-scaled floating cards.
+const SIZE_STOPS = [
+  {d:0, w:266, h:200},
+  {d:1, w:200, h:150},
+  {d:2, w:150, h:113},
+  {d:3, w:112, h:85},
+  {d:4, w:86,  h:65}
+];
+const CARD_GAP = 10;
+
+function sizeForDist(d){
+  d = Math.abs(d);
+  const last = SIZE_STOPS[SIZE_STOPS.length-1];
+  if(d >= last.d) return {w:last.w, h:last.h};
+  for(let i=0;i<SIZE_STOPS.length-1;i++){
+    const a = SIZE_STOPS[i], b = SIZE_STOPS[i+1];
+    if(d >= a.d && d <= b.d){
+      const t = (d - a.d) / (b.d - a.d);
+      return { w: a.w + (b.w-a.w)*t, h: a.h + (b.h-a.h)*t };
+    }
+  }
+  return {w:last.w, h:last.h};
+}
+
 function renderTimeline(){
   track.querySelectorAll('.photo').forEach(n => n.remove());
-  const center = timePosition;
-  const centerIdx = Math.round(center);
-  const frac = center - centerIdx;
+  const pos = timePosition;
+  const base = Math.floor(pos);
+  const f = pos - base;
+
+  const RANGE = 5;
+  const lo = Math.max(0, base - RANGE);
+  const hi = Math.min(PHOTOS.length - 1, base + RANGE + 1);
+
+  // pass 1: widths for every visible card at this instant
+  const widths = {};
+  for(let idx = lo; idx <= hi; idx++){
+    widths[idx] = sizeForDist(idx - pos).w;
+  }
+
+  // pass 2: cumulative left edges, contiguous strip with a fixed gap
+  const leftEdge = {};
+  let cum = 0;
+  for(let idx = lo; idx <= hi; idx++){
+    leftEdge[idx] = cum;
+    cum += widths[idx] + CARD_GAP;
+  }
+
+  // the strip-coordinate that should land at screen center — interpolated
+  // between base and base+1's left edges by the fractional scroll position
+  let anchor;
+  if((base) in leftEdge && (base+1) in leftEdge){
+    anchor = leftEdge[base] + f * (leftEdge[base+1] - leftEdge[base]);
+  } else if(base in leftEdge){
+    anchor = leftEdge[base];
+  } else {
+    anchor = cum/2;
+  }
 
   const W = window.innerWidth;
-  const baseGap = Math.min(W * 0.135, 150);
+  const shift = W/2 - anchor;
 
-  for(let off = -3; off <= 3; off++){
-    const idx = centerIdx + off;
-    if(idx < 0 || idx >= PHOTOS.length) continue;
+  for(let idx = lo; idx <= hi; idx++){
     const p = PHOTOS[idx];
+    const d = idx - pos;
+    const {w, h} = sizeForDist(d);
     const el = document.createElement('div');
     el.className = 'photo';
     el.style.backgroundImage = p.grad;
-
-    const dist = Math.abs(off - frac);
-    const scale = clamp(1 - dist * 0.22, 0.4, 1);
-    const w = 150 * scale;
-    const h = 200 * scale;
-    const x = W/2 + (off - frac) * baseGap - w/2;
-
     el.style.width = w + 'px';
     el.style.height = h + 'px';
-    el.style.left = x + 'px';
-    el.style.opacity = clamp(1 - dist*0.42, 0.18, 1);
+    el.style.left = (leftEdge[idx] + shift) + 'px';
+    el.style.opacity = clamp(1 - Math.abs(d)*0.16, 0.35, 1);
     track.appendChild(el);
   }
 
+  const centerIdx = Math.round(pos);
   tlDate.textContent = PHOTOS[centerIdx].dateLabel;
   idxLeft.textContent = String(Math.max(1, centerIdx));
   idxRight.textContent = String(Math.min(PHOTOS.length, centerIdx + 2));
