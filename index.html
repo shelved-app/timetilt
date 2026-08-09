@@ -63,6 +63,7 @@
   .brand{
     position:absolute; top:22px; left:26px;
     font-family:'Space Grotesk'; font-size:14px; letter-spacing:2.2px; font-weight:500;
+    pointer-events:auto; transition:opacity .15s ease;
   }
   .brand-mark{display:block; width:34px; height:10px; margin-top:6px; opacity:0.8;}
   .user{
@@ -140,7 +141,7 @@
   <h1>Rotate your phone to start the memory timeline</h1>
   <p>Imagine these photos are real, tangible prints in your hands. Tilt left and right to move through time. Tilt toward you to look closer, away to pull back.</p>
   <button id="enter-btn">Begin</button>
-  <div class="hint" id="gate-hint">Works with motion access on your phone — or use arrow keys on desktop.</div>
+  <div class="hint" id="gate-hint">Works with motion access on your phone — or use arrow keys on desktop. Tap the TIMETILT logo anytime to recenter tilt to how you're holding the phone.</div>
   <div id="diag" style="font-family:monospace; font-size:10px; color:#bbb; margin-top:14px; max-width:300px; line-height:1.6; word-break:break-all;"></div>
 </div>
 
@@ -148,7 +149,7 @@
 
 <div id="app">
   <div class="chrome">
-    <div class="brand">TIMETILT<span class="brand-mark">⟡</span></div>
+    <div class="brand" id="brand-recal">TIMETILT<span class="brand-mark">⟡</span></div>
     <div class="edge-index left" id="idx-left"></div>
     <div class="edge-index right" id="idx-right"></div>
     <div class="user">
@@ -160,7 +161,7 @@
 
   <div id="scene">
     <div class="view" id="view-grid"><div id="grid-track"></div></div>
-    <div class="view" id="view-timeline" style="opacity:1; pointer-events:auto;"><div id="timeline-track"><div class="date-pill" id="tl-date"></div></div></div>
+    <div class="view" id="view-timeline"><div id="timeline-track"><div class="date-pill" id="tl-date"></div></div></div>
     <div class="view" id="view-detail">
       <div class="detail-wrap">
         <div class="detail-photo" id="detail-photo"></div>
@@ -229,6 +230,13 @@ let tiltFB = 0;   // toward(-) / away(+) — drives zoom level
 let usingDeviceTilt = false;
 let lastMotionEventTime = 0;
 
+// baseline calibration — tilt is measured as delta from however you're
+// actually holding the phone, not from an absolute "flat" position
+let baselineLR = null;
+let baselineFB = null;
+let rawLR = 0;
+let rawFB = 0;
+
 // zoom step debouncing (hysteresis so it doesn't flicker at the boundary)
 const ZOOM_ENTER = 22;   // deg needed to trigger a step
 const ZOOM_RESET = 8;    // must fall back under this before it can trigger again
@@ -266,6 +274,14 @@ const tiltStatusEl = document.getElementById('tilt-status');
 tiltStatusEl.addEventListener('click', () => {
   DEBUG = !DEBUG;
   debugEl.style.display = DEBUG ? 'block' : 'none';
+});
+
+const brandRecal = document.getElementById('brand-recal');
+brandRecal.style.cursor = 'pointer';
+brandRecal.addEventListener('click', () => {
+  recalibrate();
+  brandRecal.style.opacity = '0.35';
+  setTimeout(() => { brandRecal.style.opacity = '1'; }, 180);
 });
 
 function updateTiltStatus(){
@@ -373,10 +389,24 @@ function onDeviceOrientation(e){
     fb = e.gamma;
   } else {                 // portrait fallback — still usable pre-rotate
     lr = e.gamma;
-    fb = e.beta - 90 > -180 ? (e.beta) : e.beta;
+    fb = e.beta;
   }
-  tiltLR = clamp(lr, -60, 60);
-  tiltFB = clamp(fb, -60, 60);
+  rawLR = lr;
+  rawFB = fb;
+
+  // first reading becomes the neutral baseline — however you're holding
+  // the phone right now counts as "centered"
+  if(baselineLR === null){ baselineLR = lr; baselineFB = fb; }
+
+  tiltLR = clamp(lr - baselineLR, -60, 60);
+  tiltFB = clamp(fb - baselineFB, -60, 60);
+}
+
+function recalibrate(){
+  baselineLR = rawLR;
+  baselineFB = rawFB;
+  tiltLR = 0;
+  tiltFB = 0;
 }
 
 function checkOrientation(){
