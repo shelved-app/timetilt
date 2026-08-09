@@ -226,6 +226,8 @@ let settleTimer = null;
 // tilt inputs, normalized degrees
 let tiltLR = 0;   // left(-) / right(+) — drives time scroll
 let tiltFB = 0;   // toward(-) / away(+) — drives zoom level
+let smoothLR = 0; // low-pass filtered versions, used for all logic
+let smoothFB = 0;
 let usingDeviceTilt = false;
 let lastMotionEventTime = 0;
 
@@ -241,14 +243,14 @@ const CALIB_WINDOW_MS = 500;
 let calibStartTime = 0;
 
 // zoom step debouncing (hysteresis so it doesn't flicker at the boundary)
-const ZOOM_ENTER = 13;   // deg needed to trigger a step
-const ZOOM_RESET = 5;    // must fall back under this before it can trigger again
+const ZOOM_ENTER = 20;   // deg needed to trigger a step
+const ZOOM_RESET = 9;    // must fall back under this before it can trigger again
 let zoomArmedToward = true;
 let zoomArmedAway = true;
 
 // detail-view step debouncing (single-photo-at-a-time scrub)
-const LR_STEP_ENTER = 18;  // deg needed to trigger one photo-step in Detail
-const LR_STEP_RESET = 6;   // must fall back under this before it can trigger again
+const LR_STEP_ENTER = 24;  // deg needed to trigger one photo-step in Detail
+const LR_STEP_RESET = 9;   // must fall back under this before it can trigger again
 let lrArmedFwd = true;
 let lrArmedBack = true;
 
@@ -457,15 +459,15 @@ function decayTo(cur, target, speed){
 }
 
 /* ============ PHYSICS: left-right tilt -> time scroll ============ */
-const DEAD_ZONE = 7;
+const DEAD_ZONE = 11;
 function speedForTilt(t){
   const a = Math.abs(t);
   if(a < DEAD_ZONE) return 0;
   const sign = Math.sign(t);
   let mag;
-  if(a < 16) mag = 1.1;        // tier 1: slow
-  else if(a < 30) mag = 3.0;   // tier 2: medium
-  else mag = 6.4;              // tier 3: fast
+  if(a < 24) mag = 0.9;        // tier 1: slow
+  else if(a < 42) mag = 2.4;   // tier 2: medium
+  else mag = 4.6;              // tier 3: fast
   return sign * mag; // photos per second
 }
 
@@ -474,8 +476,14 @@ let lastPassedIndex = Math.round(timePosition);
 function tick(dt){
   if(!usingDeviceTilt){ tiltLR = keyboardTiltLR(); }
 
+  // low-pass filter — raw sensor jitter (or keyboard ramping) was enough
+  // on its own to keep readings outside the dead zone even at rest
+  const SMOOTH = 0.22;
+  smoothLR += (tiltLR - smoothLR) * SMOOTH;
+  smoothFB += (tiltFB - smoothFB) * SMOOTH;
+
   if(zoomLevel !== 2){
-    velocity = speedForTilt(tiltLR);
+    velocity = speedForTilt(smoothLR);
     timePosition = clamp(timePosition + velocity * dt, 0, PHOTOS.length - 1);
     const nowIndex = Math.round(timePosition);
     if(nowIndex !== lastPassedIndex){
@@ -491,7 +499,7 @@ function tick(dt){
 }
 
 function handleDetailStep(){
-  const t = tiltLR;
+  const t = smoothLR;
   if(t >= LR_STEP_ENTER && lrArmedFwd){
     stepDetailPhoto(1);
     lrArmedFwd = false;
@@ -520,7 +528,7 @@ function stepDetailPhoto(dir){
 }
 
 function handleZoomTilt(){
-  const fb = usingDeviceTilt ? tiltFB : 0;
+  const fb = usingDeviceTilt ? smoothFB : 0;
   if(!usingDeviceTilt) return; // keyboard uses discrete Up/Down instead
   if(fb <= -ZOOM_ENTER && zoomArmedToward){
     stepZoom(-1);
@@ -703,7 +711,7 @@ function renderAll(){
   if(DEBUG){
     debugEl.textContent =
       `zoom:${zoomLevel}  time:${timePosition.toFixed(2)}/${PHOTOS.length-1}  ` +
-      `tiltLR:${tiltLR.toFixed(1)}  tiltFB:${tiltFB.toFixed(1)}  vel:${velocity.toFixed(1)}  ` +
+      `raw LR:${tiltLR.toFixed(1)} FB:${tiltFB.toFixed(1)}  smooth LR:${smoothLR.toFixed(1)} FB:${smoothFB.toFixed(1)}  vel:${velocity.toFixed(1)}  ` +
       `device:${usingDeviceTilt}`;
   }
 }
