@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>TimeTilt</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#ffffff;
+    --ink:#111111;
+    --ink-soft:#4a4a4a;
+    --line:#111111;
+    --dead-tint: rgba(17,17,17,0.06);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0; padding:0; width:100%; height:100%;
+    background:var(--bg); color:var(--ink);
+    font-family:'Inter', sans-serif;
+    overflow:hidden;
+    overscroll-behavior:none;
+    touch-action:none;
+    user-select:none;
+  }
+  #app{position:fixed; inset:0; display:flex; flex-direction:column;}
+
+  /* ---------- GATE ---------- */
+  #gate{
+    position:fixed; inset:0; background:var(--bg); z-index:100;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:32px; gap:22px;
+  }
+  #gate .mark{font-family:'Space Grotesk'; font-size:15px; letter-spacing:3px; font-weight:600;}
+  .phone-icon{width:52px; height:88px; border:2.5px solid var(--ink); border-radius:10px; position:relative;
+    animation:rock 1.8s ease-in-out infinite;}
+  .phone-icon::after{content:""; position:absolute; bottom:8px; left:50%; transform:translateX(-50%);
+    width:16px; height:2px; background:var(--ink); border-radius:2px;}
+  @keyframes rock{
+    0%,100%{transform:rotate(0deg);}
+    50%{transform:rotate(-88deg);}
+  }
+  #gate h1{font-family:'Space Grotesk'; font-weight:500; font-size:20px; margin:0; max-width:280px; line-height:1.4;}
+  #gate p{font-size:14px; color:var(--ink-soft); margin:0; max-width:260px; line-height:1.5;}
+  #gate button{
+    margin-top:6px; font-family:'Inter'; font-size:14px; font-weight:500;
+    background:var(--ink); color:#fff; border:none; border-radius:999px;
+    padding:13px 26px; cursor:pointer;
+  }
+  #gate .hint{font-size:12px; color:#999; margin-top:2px;}
+  #gate.hidden{display:none;}
+
+  #rotate-nudge{
+    position:fixed; inset:0; background:var(--bg); z-index:90;
+    display:none; align-items:center; justify-content:center; flex-direction:column; gap:16px;
+  }
+  #rotate-nudge.show{display:flex;}
+  #rotate-nudge p{font-family:'Space Grotesk'; font-size:16px;}
+
+  /* ---------- HEADER (present in all views) ---------- */
+  .chrome{position:fixed; inset:0; pointer-events:none; z-index:20;}
+  .brand{
+    position:absolute; top:22px; left:26px;
+    font-family:'Space Grotesk'; font-size:14px; letter-spacing:2.2px; font-weight:500;
+  }
+  .brand-mark{display:block; width:34px; height:10px; margin-top:6px; opacity:0.8;}
+  .user{
+    position:absolute; top:22px; right:26px;
+    display:flex; align-items:center; gap:8px; font-size:14px;
+  }
+  .user svg{opacity:0.85;}
+  .edge-index{
+    position:absolute; top:22px; font-family:'Space Grotesk'; font-size:14px; color:var(--ink-soft);
+  }
+  .edge-index.left{left:26px; top:52px;}
+  .edge-index.right{right:26px; top:52px;}
+
+  /* ---------- SCENE (the part that changes with zoom level) ---------- */
+  #scene{position:fixed; inset:0; overflow:hidden;}
+  .view{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    opacity:0; transform:scale(1); transition:opacity .35s ease, transform .35s ease; pointer-events:none;}
+  .view.active{opacity:1; pointer-events:auto;}
+
+  /* Timeline view */
+  #view-timeline{}
+  #timeline-track{position:relative; height:100%; width:100%; display:flex; align-items:center;}
+  .photo{
+    position:absolute; top:50%; border-radius:6px; overflow:hidden;
+    box-shadow:0 1px 0 rgba(0,0,0,0.04);
+    background-size:cover; background-position:center;
+    transform:translateY(-50%);
+    transition:width .18s ease, height .18s ease, opacity .18s ease, filter .18s ease;
+  }
+  .photo .cap{position:absolute; inset:0; background:rgba(0,0,0,0.0);}
+  .date-pill{
+    position:absolute; left:50%; transform:translateX(-50%); bottom:14%;
+    border:1px solid var(--ink); border-radius:999px; padding:5px 16px;
+    font-size:13px; font-family:'Inter'; background:var(--bg); white-space:nowrap;
+  }
+
+  /* Detail view */
+  #view-detail{}
+  .detail-wrap{display:flex; align-items:center; gap:48px; max-width:88%;}
+  .detail-photo{width:min(38vw,300px); height:min(56vh,400px); border-radius:6px; background-size:cover; background-position:center;}
+  .detail-meta{display:flex; flex-direction:column; gap:14px; max-width:280px; opacity:0; transition:opacity .5s ease;}
+  .detail-meta.settled{opacity:1;}
+  .detail-date{
+    align-self:flex-start; border:1px solid var(--ink); border-radius:999px; padding:5px 16px; font-size:13px;
+  }
+  .detail-loc{display:flex; align-items:center; gap:8px; font-size:14px;}
+  .detail-caption{font-size:14px; line-height:1.55; color:var(--ink);}
+
+  /* Grid view */
+  #view-grid{}
+  #grid-track{position:relative; height:100%; width:100%;}
+  .g-col{position:absolute; top:0; bottom:0; width:74px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;}
+  .g-date{font-size:12px; color:var(--ink-soft); position:absolute; top:16%; font-family:'Space Grotesk';}
+  .g-photo{width:56px; height:74px; border-radius:5px; background-size:cover; background-position:center; opacity:0.55; transition:opacity .2s ease, width .2s ease, height .2s ease;}
+  .g-col.current .g-photo{opacity:1;}
+  .g-col.current .g-photo.hero{width:74px; height:98px;}
+
+  /* ---------- Debug ---------- */
+  #debug{
+    position:fixed; bottom:10px; left:50%; transform:translateX(-50%);
+    font-family:monospace; font-size:11px; color:#aaa; z-index:200; text-align:center; line-height:1.5;
+    pointer-events:none; white-space:pre; display:none;
+  }
+  #tilt-status{
+    position:absolute; top:52px; right:26px; font-size:11px; color:#999;
+    pointer-events:auto; z-index:21;
+  }
+</style>
+</head>
+<body>
+
+<div id="gate">
+  <div class="mark">TIMETILT</div>
+  <div class="phone-icon"></div>
+  <h1>Rotate your phone to start the memory timeline</h1>
+  <p>Imagine these photos are real, tangible prints in your hands. Tilt left and right to move through time. Tilt toward you to look closer, away to pull back.</p>
+  <button id="enter-btn">Begin</button>
+  <div class="hint" id="gate-hint">Works with motion access on your phone — or use arrow keys on desktop.</div>
+  <div id="diag" style="font-family:monospace; font-size:10px; color:#bbb; margin-top:14px; max-width:300px; line-height:1.6; word-break:break-all;"></div>
+</div>
+
+<div id="rotate-nudge"><p>↻ Rotate to landscape</p></div>
+
+<div id="app">
+  <div class="chrome">
+    <div class="brand">TIMETILT<span class="brand-mark">⟡</span></div>
+    <div class="edge-index left" id="idx-left"></div>
+    <div class="edge-index right" id="idx-right"></div>
+    <div class="user">
+      <span id="username">@shelby</span>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="black" stroke-width="1.4"/><circle cx="12" cy="10" r="3.4" stroke="black" stroke-width="1.4"/><path d="M5.5 19c1.3-3 4-4.6 6.5-4.6s5.2 1.6 6.5 4.6" stroke="black" stroke-width="1.4"/></svg>
+    </div>
+    <div id="tilt-status"></div>
+  </div>
+
+  <div id="scene">
+    <div class="view" id="view-grid"><div id="grid-track"></div></div>
+    <div class="view" id="view-timeline" style="opacity:1; pointer-events:auto;"><div id="timeline-track"><div class="date-pill" id="tl-date"></div></div></div>
+    <div class="view" id="view-detail">
+      <div class="detail-wrap">
+        <div class="detail-photo" id="detail-photo"></div>
+        <div class="detail-meta" id="detail-meta">
+          <div class="detail-date" id="detail-date"></div>
+          <div class="detail-loc">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="black" stroke-width="1.3"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.7-3.8-9s1.3-6.4 3.8-9z" stroke="black" stroke-width="1.1"/></svg>
+            <span id="detail-loc"></span>
+          </div>
+          <div class="detail-caption" id="detail-caption"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="debug"></div>
+
+<script>
+(function(){
+
+/* ============ MOCK PHOTO DATA ============ */
+const palettes = [
+  ["#8FA3AD","#5C7080"], ["#D8B48C","#A9714F"], ["#7C8B5E","#4E5A38"],
+  ["#C4886A","#8C4E33"], ["#6E8FA0","#3F5A6B"], ["#B8A6C9","#7C6A93"],
+  ["#9CAF88","#5F7350"], ["#D9A05B","#A8672E"], ["#5B7C99","#324F66"]
+];
+function grad(i){ const [a,b] = palettes[i % palettes.length]; return `linear-gradient(160deg, ${a}, ${b})`; }
+
+const locations = ["Monterosso, IT","Riomaggiore, IT","Vernazza, IT","Portofino, IT","Positano, IT",null,null,"Florence, IT",null];
+const captions = [
+  "We took a sunset boat ride to see all of the villages in Cinque Terre. Our driver Eduardo took us to a waterfall spot so we could jump in and taught us how to feel the seagulls.",
+  "Gelato number three of the day. No regrets.",
+  null,
+  "Got up before sunrise to beat the crowds to the trailhead. Worth it.",
+  null,
+  "Carnival lights on the piazza, first night in town.",
+  null, null, null
+];
+
+const PHOTOS = [];
+const startDate = new Date(2023,8,1); // Sep 1 2023
+for(let i=0;i<26;i++){
+  const d = new Date(startDate.getTime() + i*2*86400000);
+  PHOTOS.push({
+    id:i+1,
+    date:d,
+    dateLabel: d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}),
+    dateShort: d.toLocaleDateString('en-US',{month:'short', year:'2-digit'}),
+    grad: grad(i),
+    location: locations[i % locations.length],
+    caption: captions[i % captions.length]
+  });
+}
+
+/* ============ STATE ============ */
+let timePosition = 12.0;   // continuous index into PHOTOS, "wherever you last left off"
+let zoomLevel = 1;         // 0 = grid, 1 = timeline, 2 = detail
+let velocity = 0;
+let lastTick = performance.now();
+let settleTimer = null;
+
+// tilt inputs, normalized degrees
+let tiltLR = 0;   // left(-) / right(+) — drives time scroll
+let tiltFB = 0;   // toward(-) / away(+) — drives zoom level
+let usingDeviceTilt = false;
+let lastMotionEventTime = 0;
+
+// zoom step debouncing (hysteresis so it doesn't flicker at the boundary)
+const ZOOM_ENTER = 22;   // deg needed to trigger a step
+const ZOOM_RESET = 8;    // must fall back under this before it can trigger again
+let zoomArmedToward = true;
+let zoomArmedAway = true;
+
+// detail-view step debouncing (single-photo-at-a-time scrub)
+const LR_STEP_ENTER = 18;  // deg needed to trigger one photo-step in Detail
+const LR_STEP_RESET = 6;   // must fall back under this before it can trigger again
+let lrArmedFwd = true;
+let lrArmedBack = true;
+
+/* ============ DOM ============ */
+const gate = document.getElementById('gate');
+const rotateNudge = document.getElementById('rotate-nudge');
+const enterBtn = document.getElementById('enter-btn');
+const gateHint = document.getElementById('gate-hint');
+const track = document.getElementById('timeline-track');
+const tlDate = document.getElementById('tl-date');
+const idxLeft = document.getElementById('idx-left');
+const idxRight = document.getElementById('idx-right');
+const viewTimeline = document.getElementById('view-timeline');
+const viewDetail = document.getElementById('view-detail');
+const viewGrid = document.getElementById('view-grid');
+const detailPhoto = document.getElementById('detail-photo');
+const detailMeta = document.getElementById('detail-meta');
+const detailDate = document.getElementById('detail-date');
+const detailLoc = document.getElementById('detail-loc');
+const detailCaption = document.getElementById('detail-caption');
+const gridTrack = document.getElementById('grid-track');
+const debugEl = document.getElementById('debug');
+
+let DEBUG = false;
+const tiltStatusEl = document.getElementById('tilt-status');
+tiltStatusEl.addEventListener('click', () => {
+  DEBUG = !DEBUG;
+  debugEl.style.display = DEBUG ? 'block' : 'none';
+});
+
+function updateTiltStatus(){
+  if(!usingDeviceTilt){
+    tiltStatusEl.textContent = 'tilt: off (arrow keys)';
+    return;
+  }
+  const sinceSignal = performance.now() - lastMotionEventTime;
+  if(lastMotionEventTime === 0){
+    tiltStatusEl.textContent = 'tilt: waiting for signal…';
+  } else if(sinceSignal > 1200){
+    tiltStatusEl.textContent = 'tilt: no signal — tap to inspect';
+  } else {
+    tiltStatusEl.textContent = 'tilt: live · tap to inspect';
+  }
+}
+
+/* ============ GATE / PERMISSION ============ */
+function needsIOSPermission(){
+  return typeof DeviceOrientationEvent !== 'undefined' &&
+    typeof DeviceOrientationEvent.requestPermission === 'function';
+}
+
+(function printDiagnostics(){
+  const d = document.getElementById('diag');
+  const hasDOE = typeof DeviceOrientationEvent !== 'undefined';
+  const hasReqPerm = hasDOE && typeof DeviceOrientationEvent.requestPermission === 'function';
+  const lines = [
+    'secure context: ' + window.isSecureContext,
+    'protocol: ' + location.protocol,
+    'in iframe: ' + (window.self !== window.top),
+    'DeviceOrientationEvent: ' + hasDOE,
+    'requestPermission fn: ' + hasReqPerm,
+    'ua: ' + navigator.userAgent.slice(0, 70)
+  ];
+  d.textContent = lines.join('\n');
+})();
+
+enterBtn.addEventListener('click', async () => {
+  const d = document.getElementById('diag');
+  d.textContent += '\n--- tapped Begin ---';
+  if(needsIOSPermission()){
+    d.textContent += '\ncalling requestPermission()...';
+    try{
+      const res = await DeviceOrientationEvent.requestPermission();
+      d.textContent += '\nresult: ' + res;
+      if(res === 'granted'){
+        startDeviceTilt();
+        launchApp();
+      } else {
+        gateHint.textContent = 'Motion access was denied. Enable it in Settings → Safari → Motion & Orientation Access, then reload — or continue with arrow keys.';
+        showFallbackButton();
+      }
+    }catch(e){
+      d.textContent += '\nerror: ' + e.message;
+      gateHint.textContent = 'Motion access failed to start (' + e.message + '). Try opening this page directly in Safari/Chrome, not an in-app preview — or continue with arrow keys.';
+      showFallbackButton();
+    }
+  } else if('DeviceOrientationEvent' in window){
+    d.textContent += '\nno requestPermission needed, starting directly';
+    startDeviceTilt();
+    launchApp();
+  } else {
+    d.textContent += '\nno DeviceOrientationEvent at all';
+    gateHint.textContent = 'This browser has no motion sensor access. Using arrow keys instead.';
+    launchApp();
+  }
+});
+
+function showFallbackButton(){
+  if(document.getElementById('fallback-btn')) return;
+  const b = document.createElement('button');
+  b.id = 'fallback-btn';
+  b.textContent = 'Continue without tilt';
+  b.style.marginTop = '4px';
+  b.style.background = 'transparent';
+  b.style.color = '#111';
+  b.style.border = '1px solid #111';
+  b.addEventListener('click', launchApp);
+  gate.appendChild(b);
+}
+
+function launchApp(){
+  gate.classList.add('hidden');
+  checkOrientation();
+  updateTiltStatus();
+  requestAnimationFrame(loop);
+}
+
+function startDeviceTilt(){
+  usingDeviceTilt = true;
+  window.addEventListener('deviceorientation', onDeviceOrientation);
+}
+
+function onDeviceOrientation(e){
+  if(e.beta === null || e.gamma === null) return;
+  lastMotionEventTime = performance.now();
+  const angle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  let lr = 0, fb = 0;
+  if(angle === 90){        // landscape, home button/notch to the left
+    lr = e.beta;
+    fb = -e.gamma;
+  } else if(angle === -90 || angle === 270){ // landscape, notch to the right
+    lr = -e.beta;
+    fb = e.gamma;
+  } else {                 // portrait fallback — still usable pre-rotate
+    lr = e.gamma;
+    fb = e.beta - 90 > -180 ? (e.beta) : e.beta;
+  }
+  tiltLR = clamp(lr, -60, 60);
+  tiltFB = clamp(fb, -60, 60);
+}
+
+function checkOrientation(){
+  const isLandscape = window.innerWidth > window.innerHeight;
+  rotateNudge.classList.toggle('show', !isLandscape);
+}
+window.addEventListener('resize', checkOrientation);
+window.addEventListener('orientationchange', checkOrientation);
+
+/* ============ KEYBOARD FALLBACK (desktop testing) ============ */
+const keys = {};
+window.addEventListener('keydown', (e) => {
+  keys[e.key] = true;
+  if(e.key === 'ArrowUp'){ stepZoom(-1); }
+  if(e.key === 'ArrowDown'){ stepZoom(1); }
+  if(e.key.toLowerCase() === 'd'){ DEBUG = !DEBUG; debugEl.style.display = DEBUG ? 'block':'none'; }
+  if(gate && !gate.classList.contains('hidden') && e.key === 'Enter'){ enterBtn.click(); }
+});
+window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+
+function keyboardTiltLR(){
+  if(usingDeviceTilt) return tiltLR;
+  let held = 0;
+  if(keys['ArrowLeft']) held -= 1;
+  if(keys['ArrowRight']) held += 1;
+  if(held === 0){ return decayTo(tiltLR, 0, 4); }
+  // ramp up the longer it's held, simulating deeper tilt
+  const target = held * (keys['Shift'] ? 55 : 26);
+  return decayTo(tiltLR, target, 3);
+}
+function decayTo(cur, target, speed){
+  const d = target - cur;
+  if(Math.abs(d) < 0.5) return target;
+  return cur + d * 0.12 * speed / 3;
+}
+
+/* ============ PHYSICS: left-right tilt -> time scroll ============ */
+const DEAD_ZONE = 7;
+function speedForTilt(t){
+  const a = Math.abs(t);
+  if(a < DEAD_ZONE) return 0;
+  const sign = Math.sign(t);
+  let mag;
+  if(a < 16) mag = 1.1;        // tier 1: slow
+  else if(a < 30) mag = 3.0;   // tier 2: medium
+  else mag = 6.4;              // tier 3: fast
+  return sign * mag; // photos per second
+}
+
+let lastPassedIndex = Math.round(timePosition);
+
+function tick(dt){
+  if(!usingDeviceTilt){ tiltLR = keyboardTiltLR(); }
+
+  if(zoomLevel !== 2){
+    velocity = speedForTilt(tiltLR);
+    timePosition = clamp(timePosition + velocity * dt, 0, PHOTOS.length - 1);
+    const nowIndex = Math.round(timePosition);
+    if(nowIndex !== lastPassedIndex){
+      hapticTick();
+      lastPassedIndex = nowIndex;
+    }
+  } else {
+    velocity = 0;
+    handleDetailStep(); // single-photo-at-a-time scrub while zoomed into Detail
+  }
+
+  handleZoomTilt();
+}
+
+function handleDetailStep(){
+  const t = tiltLR;
+  if(t >= LR_STEP_ENTER && lrArmedFwd){
+    stepDetailPhoto(1);
+    lrArmedFwd = false;
+  } else if(t < LR_STEP_RESET){
+    lrArmedFwd = true;
+  }
+  if(t <= -LR_STEP_ENTER && lrArmedBack){
+    stepDetailPhoto(-1);
+    lrArmedBack = false;
+  } else if(t > -LR_STEP_RESET){
+    lrArmedBack = true;
+  }
+}
+
+function stepDetailPhoto(dir){
+  const curIdx = Math.round(timePosition);
+  const newIdx = clamp(curIdx + dir, 0, PHOTOS.length - 1);
+  if(newIdx === curIdx) return;
+  timePosition = newIdx;
+  lastPassedIndex = newIdx;
+  hapticTick();
+  // re-settle the caption fade-in for the newly centered photo
+  detailMeta.classList.remove('settled');
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => detailMeta.classList.add('settled'), 380);
+}
+
+function handleZoomTilt(){
+  const fb = usingDeviceTilt ? tiltFB : 0;
+  if(!usingDeviceTilt) return; // keyboard uses discrete Up/Down instead
+  if(fb <= -ZOOM_ENTER && zoomArmedToward){
+    stepZoom(-1);
+    zoomArmedToward = false;
+  } else if(fb > -ZOOM_RESET){
+    zoomArmedToward = true;
+  }
+  if(fb >= ZOOM_ENTER && zoomArmedAway){
+    stepZoom(1);
+    zoomArmedAway = false;
+  } else if(fb < ZOOM_RESET){
+    zoomArmedAway = true;
+  }
+}
+
+function stepZoom(dir){
+  const next = clamp(zoomLevel + dir, 0, 2);
+  if(next === zoomLevel) return;
+  zoomLevel = next;
+  lrArmedFwd = true;
+  lrArmedBack = true;
+  renderZoomState();
+}
+
+function hapticTick(){
+  if(navigator.vibrate) navigator.vibrate(8);
+}
+
+function clamp(v,a,b){ return Math.max(a, Math.min(b,v)); }
+
+/* ============ RENDER ============ */
+function renderZoomState(){
+  viewTimeline.classList.toggle('active', zoomLevel === 1);
+  viewDetail.classList.toggle('active', zoomLevel === 2);
+  viewGrid.classList.toggle('active', zoomLevel === 0);
+
+  detailMeta.classList.remove('settled');
+  clearTimeout(settleTimer);
+  if(zoomLevel === 2){
+    settleTimer = setTimeout(() => detailMeta.classList.add('settled'), 380);
+  }
+}
+
+function renderTimeline(){
+  track.querySelectorAll('.photo').forEach(n => n.remove());
+  const center = timePosition;
+  const centerIdx = Math.round(center);
+  const frac = center - centerIdx;
+
+  const W = window.innerWidth;
+  const baseGap = Math.min(W * 0.135, 150);
+
+  for(let off = -3; off <= 3; off++){
+    const idx = centerIdx + off;
+    if(idx < 0 || idx >= PHOTOS.length) continue;
+    const p = PHOTOS[idx];
+    const el = document.createElement('div');
+    el.className = 'photo';
+    el.style.backgroundImage = p.grad;
+
+    const dist = Math.abs(off - frac);
+    const scale = clamp(1 - dist * 0.22, 0.4, 1);
+    const w = 150 * scale;
+    const h = 200 * scale;
+    const x = W/2 + (off - frac) * baseGap - w/2;
+
+    el.style.width = w + 'px';
+    el.style.height = h + 'px';
+    el.style.left = x + 'px';
+    el.style.opacity = clamp(1 - dist*0.42, 0.18, 1);
+    track.appendChild(el);
+  }
+
+  tlDate.textContent = PHOTOS[centerIdx].dateLabel;
+  idxLeft.textContent = String(Math.max(1, centerIdx));
+  idxRight.textContent = String(Math.min(PHOTOS.length, centerIdx + 2));
+}
+
+function renderDetail(){
+  const idx = Math.round(timePosition);
+  const p = PHOTOS[idx];
+  detailPhoto.style.backgroundImage = p.grad;
+  detailDate.textContent = p.dateLabel;
+  detailLoc.textContent = p.location || "No location tagged";
+  detailCaption.textContent = p.caption || "No caption yet.";
+}
+
+function renderGrid(){
+  gridTrack.querySelectorAll('.g-col').forEach(n => n.remove());
+  const centerIdx = Math.round(timePosition);
+  const W = window.innerWidth;
+  const colW = 96;
+  const visibleCols = Math.ceil(W / colW) + 2;
+  const half = Math.floor(visibleCols/2);
+
+  for(let off = -half; off <= half; off++){
+    const idx = centerIdx + off;
+    if(idx < 0 || idx >= PHOTOS.length) continue;
+    const p = PHOTOS[idx];
+    const col = document.createElement('div');
+    col.className = 'g-col' + (off === 0 ? ' current' : '');
+    col.style.left = (W/2 + off*colW - colW/2) + 'px';
+
+    const dateLbl = document.createElement('div');
+    dateLbl.className = 'g-date';
+    dateLbl.textContent = p.dateShort;
+    col.appendChild(dateLbl);
+
+    const stackCount = off === 0 ? 2 : 3;
+    for(let s=0; s<stackCount; s++){
+      const ph = document.createElement('div');
+      ph.className = 'g-photo' + (off === 0 && s === 0 ? ' hero' : '');
+      const pIdx = clamp(idx + s - 1, 0, PHOTOS.length-1);
+      ph.style.backgroundImage = PHOTOS[pIdx].grad;
+      col.appendChild(ph);
+    }
+    gridTrack.appendChild(col);
+  }
+}
+
+function renderAll(){
+  if(zoomLevel === 1) renderTimeline();
+  if(zoomLevel === 2) renderDetail();
+  if(zoomLevel === 0) renderGrid();
+
+  if(DEBUG){
+    debugEl.textContent =
+      `zoom:${zoomLevel}  time:${timePosition.toFixed(2)}/${PHOTOS.length-1}  ` +
+      `tiltLR:${tiltLR.toFixed(1)}  tiltFB:${tiltFB.toFixed(1)}  vel:${velocity.toFixed(1)}  ` +
+      `device:${usingDeviceTilt}`;
+  }
+}
+
+/* ============ LOOP ============ */
+function loop(now){
+  const dt = Math.min((now - lastTick)/1000, 0.05);
+  lastTick = now;
+  tick(dt);
+  renderAll();
+  updateTiltStatus();
+  requestAnimationFrame(loop);
+}
+
+renderZoomState();
+renderAll();
+
+})();
+</script>
+</body>
+</html>
