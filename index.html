@@ -529,6 +529,8 @@ function speedForTilt(t){
 }
 
 let lastPassedIndex = Math.round(timePosition);
+let idleSince = null;
+const IDLE_BEFORE_SETTLE_MS = 150;
 
 function tick(dt){
   if(!usingDeviceTilt){ tiltLR = keyboardTiltLR(); }
@@ -545,20 +547,30 @@ function tick(dt){
     const rawVel = speedForTilt(smoothLR);
 
     if(rawVel === 0){
-      // no active tilt input — settle smoothly onto the nearest whole
-      // photo instead of freezing at whatever fractional position you
-      // happened to release at. At the ends this is what makes the first/
-      // last photo actually reach true center instead of stopping short.
-      const target = Math.round(timePosition);
-      const diff = target - timePosition;
-      if(Math.abs(diff) > 0.002){
-        const SETTLE_RATE = 7; // convergence speed, photos/sec-ish
-        timePosition += diff * Math.min(1, SETTLE_RATE * dt);
-      } else {
-        timePosition = target;
+      if(idleSince === null) idleSince = performance.now();
+      const idleFor = performance.now() - idleSince;
+
+      if(idleFor > IDLE_BEFORE_SETTLE_MS){
+        // sustained stillness — settle smoothly onto the nearest whole
+        // photo instead of freezing at whatever fractional position you
+        // happened to release at. At the ends this is what makes the
+        // first/last photo actually reach true center instead of
+        // stopping short.
+        const target = Math.round(timePosition);
+        const diff = target - timePosition;
+        if(Math.abs(diff) > 0.002){
+          const SETTLE_RATE = 7; // convergence speed, photos/sec-ish
+          timePosition += diff * Math.min(1, SETTLE_RATE * dt);
+        } else {
+          timePosition = target;
+        }
       }
+      // else: momentarily quiet but not sustained — hold position exactly
+      // as-is rather than settling, so a brief dip during active tilting
+      // doesn't get yanked back toward center
       velocity = 0;
     } else {
+      idleSince = null;
       velocity = rawVel;
       // soft deceleration near either end — still reaches exactly index 0
       // or the last photo (clamp guarantees that), just eases into it
