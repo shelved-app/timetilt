@@ -223,34 +223,47 @@ let velocity = 0;
 let lastTick = performance.now();
 let settleTimer = null;
 
-// tilt inputs, normalized degrees
-let tiltLR = 0;   // left(-) / right(+) — drives time scroll
-let tiltFB = 0;   // toward(-) / away(+) — drives zoom level
+// tilt inputs — screen-relative gravity components (not Euler angles;
+// this avoids the gimbal-lock instability that plagued beta/gamma when
+// held near landscape orientation)
+let rawLR = 0;    // gravity component along the screen's left-right axis
+let rawFB = 0;    // gravity component along the screen's front-back axis
+let tiltLR = 0;    // rawLR minus the continuously-recentering baseline
+let tiltFB = 0;
 let smoothLR = 0; // low-pass filtered versions, used for all logic
 let smoothFB = 0;
 let usingDeviceTilt = false;
 let lastMotionEventTime = 0;
 
-// baseline calibration — tilt is measured as delta from however you're
-// actually holding the phone, not from an absolute "flat" position
-let baselineLR = null;
-let baselineFB = null;
-let rawLR = 0;
-let rawFB = 0;
+// If left/right or forward/back ever come out inverted on a real device,
+// flip the corresponding constant to -1 — one-line fix, no other changes needed.
+const LR_SIGN = 1;
+const FB_SIGN = 1;
+
+// baseline calibration — starts from a short averaging window, then keeps
+// SLOWLY drifting toward wherever you're currently resting, but only while
+// you're not actively gesturing. This is what makes "if you aren't moving,
+// it stands still" true regardless of how you're holding the phone.
+let baselineLR = 0;
+let baselineFB = 0;
+let baselineReady = false;
 let calibrating = false;
 let calibSamples = [];
 const CALIB_WINDOW_MS = 500;
 let calibStartTime = 0;
+const IDLE_RECENTER_RATE = 0.02; // per-frame pull toward current reading while idle
+const IDLE_THRESH = 1.0;         // below this (m/s^2-ish units) counts as "not gesturing"
 
 // zoom step debouncing (hysteresis so it doesn't flicker at the boundary)
-const ZOOM_ENTER = 20;   // deg needed to trigger a step
-const ZOOM_RESET = 9;    // must fall back under this before it can trigger again
-let zoomArmedToward = true;
-let zoomArmedAway = true;
+// units are gravity-component magnitude, roughly 0-9.8 range
+const ZOOM_ENTER = 3.3;
+const ZOOM_RESET = 1.5;
+let zoomArmedForward = true;
+let zoomArmedBackward = true;
 
 // detail-view step debouncing (single-photo-at-a-time scrub)
-const LR_STEP_ENTER = 24;  // deg needed to trigger one photo-step in Detail
-const LR_STEP_RESET = 9;   // must fall back under this before it can trigger again
+const LR_STEP_ENTER = 4.0;
+const LR_STEP_RESET = 1.5;
 let lrArmedFwd = true;
 let lrArmedBack = true;
 
@@ -294,7 +307,7 @@ function updateTiltStatus(){
     tiltStatusEl.textContent = 'tilt: off (arrow keys)';
     return;
   }
-  if(baselineLR === null){
+  if(!baselineReady){
     tiltStatusEl.textContent = calibrating ? 'tilt: calibrating, hold still…' : 'tilt: waiting for landscape…';
     return;
   }
@@ -308,19 +321,19 @@ function updateTiltStatus(){
 
 /* ============ GATE / PERMISSION ============ */
 function needsIOSPermission(){
-  return typeof DeviceOrientationEvent !== 'undefined' &&
-    typeof DeviceOrientationEvent.requestPermission === 'function';
+  return typeof DeviceMotionEvent !== 'undefined' &&
+    typeof DeviceMotionEvent.requestPermission === 'function';
 }
 
 (function printDiagnostics(){
   const d = document.getElementById('diag');
-  const hasDOE = typeof DeviceOrientationEvent !== 'undefined';
-  const hasReqPerm = hasDOE && typeof DeviceOrientationEvent.requestPermission === 'function';
+  const hasDME = typeof DeviceMotionEvent !== 'undefined';
+  const hasReqPerm = hasDME && typeof DeviceMotionEvent.requestPermission === 'function';
   const lines = [
     'secure context: ' + window.isSecureContext,
     'protocol: ' + location.protocol,
     'in iframe: ' + (window.self !== window.top),
-    'DeviceOrientationEvent: ' + hasDOE,
+    'DeviceMotionEvent: ' + hasDME,
     'requestPermission fn: ' + hasReqPerm,
     'ua: ' + navigator.userAgent.slice(0, 70)
   ];
@@ -333,13 +346,13 @@ enterBtn.addEventListener('click', async () => {
   if(needsIOSPermission()){
     d.textContent += '\ncalling requestPermission()...';
     try{
-      const res = await DeviceOrientationEvent.requestPermission();
+      const res = await DeviceMotionEvent.requestPermission();
       d.textContent += '\nresult: ' + res;
       if(res === 'granted'){
         startDeviceTilt();
         launchApp();
       } else {
-        gateHint.textContent = 'Motion access was denied. Enable it in Settings → Safari → Motion & Orientation Access, then reload — or continue with arrow keys.';
+        gateHint.textContent = 'Motion access was denied. Try a Private Browsing tab (clears the cached decision), then reload — or continue with arrow keys.';
         showFallbackButton();
       }
     }catch(e){
@@ -347,12 +360,12 @@ enterBtn.addEventListener('click', async () => {
       gateHint.textContent = 'Motion access failed to start (' + e.message + '). Try opening this page directly in Safari/Chrome, not an in-app preview — or continue with arrow keys.';
       showFallbackButton();
     }
-  } else if('DeviceOrientationEvent' in window){
+  } else if('DeviceMotionEvent' in window){
     d.textContent += '\nno requestPermission needed, starting directly';
     startDeviceTilt();
     launchApp();
   } else {
-    d.textContent += '\nno DeviceOrientationEvent at all';
+    d.textContent += '\nno DeviceMotionEvent at all';
     gateHint.textContent = 'This browser has no motion sensor access. Using arrow keys instead.';
     launchApp();
   }
@@ -380,45 +393,56 @@ function launchApp(){
 
 function startDeviceTilt(){
   usingDeviceTilt = true;
-  window.addEventListener('deviceorientation', onDeviceOrientation);
+  window.addEventListener('devicemotion', onDeviceMotion);
 }
 
-function onDeviceOrientation(e){
-  if(e.beta === null || e.gamma === null) return;
+function onDeviceMotion(e){
+  const g = e.accelerationIncludingGravity;
+  if(!g || g.x === null || g.x === undefined) return;
   lastMotionEventTime = performance.now();
 
-  const lr = e.gamma;
-  const fb = e.beta;
-  rawLR = lr;
-  rawFB = fb;
+  // Compensate the device-frame gravity vector for current screen rotation,
+  // so "left/right" and "front/back" mean the same thing on screen no
+  // matter which way you're physically holding the phone in landscape.
+  const angle = ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0);
+  const a = ((angle % 360) + 360) % 360;
+  const ax = g.x, ay = g.y;
+  let sx, sy;
+  if(a === 90){ sx = -ay; sy = ax; }
+  else if(a === 270){ sx = ay; sy = -ax; }
+  else if(a === 180){ sx = -ax; sy = -ay; }
+  else { sx = ax; sy = ay; }
+
+  rawLR = LR_SIGN * sx;
+  rawFB = FB_SIGN * sy;
 
   const isLandscape = window.innerWidth > window.innerHeight;
 
-  if(baselineLR === null){
-    if(!isLandscape){ return; } // don't even start calibrating until rotated
+  if(!baselineReady){
+    if(!isLandscape){ return; } // don't start calibrating until rotated
     if(!calibrating){
       calibrating = true;
       calibSamples = [];
       calibStartTime = performance.now();
     }
-    calibSamples.push([lr, fb]);
+    calibSamples.push([rawLR, rawFB]);
     if(performance.now() - calibStartTime >= CALIB_WINDOW_MS){
       const n = calibSamples.length;
       baselineLR = calibSamples.reduce((s,p)=>s+p[0],0) / n;
       baselineFB = calibSamples.reduce((s,p)=>s+p[1],0) / n;
+      baselineReady = true;
       calibrating = false;
     }
-    tiltLR = 0; tiltFB = 0; // hold still — no scrolling while calibrating
+    tiltLR = 0; tiltFB = 0;
     return;
   }
 
-  tiltLR = clamp(lr - baselineLR, -90, 90);
-  tiltFB = clamp(fb - baselineFB, -90, 90);
+  tiltLR = rawLR - baselineLR;
+  tiltFB = rawFB - baselineFB;
 }
 
 function recalibrate(){
-  baselineLR = null; // re-enter the averaging-window flow on next reading
-  baselineFB = null;
+  baselineReady = false; // re-enter the averaging-window flow on next reading
   calibrating = false;
   tiltLR = 0;
   tiltFB = 0;
@@ -445,11 +469,11 @@ window.addEventListener('keyup', (e) => { keys[e.key] = false; });
 function keyboardTiltLR(){
   if(usingDeviceTilt) return tiltLR;
   let held = 0;
-  if(keys['ArrowLeft']) held -= 1;
-  if(keys['ArrowRight']) held += 1;
+  if(keys['ArrowLeft']) held += 1;  // left = forward, matches tilt-left = forward spec
+  if(keys['ArrowRight']) held -= 1; // right = backward
   if(held === 0){ return decayTo(tiltLR, 0, 4); }
   // ramp up the longer it's held, simulating deeper tilt
-  const target = held * (keys['Shift'] ? 55 : 26);
+  const target = held * (keys['Shift'] ? 8 : 5);
   return decayTo(tiltLR, target, 3);
 }
 function decayTo(cur, target, speed){
@@ -459,15 +483,15 @@ function decayTo(cur, target, speed){
 }
 
 /* ============ PHYSICS: left-right tilt -> time scroll ============ */
-const DEAD_ZONE = 11;
+const DEAD_ZONE = 1.9;
 function speedForTilt(t){
   const a = Math.abs(t);
   if(a < DEAD_ZONE) return 0;
   const sign = Math.sign(t);
   let mag;
-  if(a < 24) mag = 0.9;        // tier 1: slow
-  else if(a < 42) mag = 2.4;   // tier 2: medium
-  else mag = 4.6;              // tier 3: fast
+  if(a < 4.0) mag = 0.9;        // tier 1: slow
+  else if(a < 6.6) mag = 2.4;   // tier 2: medium
+  else mag = 4.6;                // tier 3: fast
   return sign * mag; // photos per second
 }
 
@@ -481,6 +505,14 @@ function tick(dt){
   const SMOOTH = 0.22;
   smoothLR += (tiltLR - smoothLR) * SMOOTH;
   smoothFB += (tiltFB - smoothFB) * SMOOTH;
+
+  // continuously recenter the baseline toward wherever you're currently
+  // resting, but ONLY while not actively gesturing — this is what makes
+  // "if you aren't moving, it stands still" true no matter how you hold it
+  if(usingDeviceTilt && baselineReady){
+    if(Math.abs(smoothLR) < IDLE_THRESH){ baselineLR += (rawLR - baselineLR) * IDLE_RECENTER_RATE; }
+    if(Math.abs(smoothFB) < IDLE_THRESH){ baselineFB += (rawFB - baselineFB) * IDLE_RECENTER_RATE; }
+  }
 
   if(zoomLevel !== 2){
     velocity = speedForTilt(smoothLR);
@@ -528,19 +560,21 @@ function stepDetailPhoto(dir){
 }
 
 function handleZoomTilt(){
-  const fb = usingDeviceTilt ? smoothFB : 0;
   if(!usingDeviceTilt) return; // keyboard uses discrete Up/Down instead
-  if(fb <= -ZOOM_ENTER && zoomArmedToward){
-    stepZoom(-1);
-    zoomArmedToward = false;
-  } else if(fb > -ZOOM_RESET){
-    zoomArmedToward = true;
-  }
-  if(fb >= ZOOM_ENTER && zoomArmedAway){
+  const fb = smoothFB;
+  // forward jolt (top tips up/away from ground) -> zoom IN toward Detail
+  if(fb >= ZOOM_ENTER && zoomArmedForward){
     stepZoom(1);
-    zoomArmedAway = false;
+    zoomArmedForward = false;
   } else if(fb < ZOOM_RESET){
-    zoomArmedAway = true;
+    zoomArmedForward = true;
+  }
+  // backward jolt (top tips back toward you/ground) -> zoom OUT toward Grid
+  if(fb <= -ZOOM_ENTER && zoomArmedBackward){
+    stepZoom(-1);
+    zoomArmedBackward = false;
+  } else if(fb > -ZOOM_RESET){
+    zoomArmedBackward = true;
   }
 }
 
@@ -711,7 +745,7 @@ function renderAll(){
   if(DEBUG){
     debugEl.textContent =
       `zoom:${zoomLevel}  time:${timePosition.toFixed(2)}/${PHOTOS.length-1}  ` +
-      `raw LR:${tiltLR.toFixed(1)} FB:${tiltFB.toFixed(1)}  smooth LR:${smoothLR.toFixed(1)} FB:${smoothFB.toFixed(1)}  vel:${velocity.toFixed(1)}  ` +
+      `raw LR:${tiltLR.toFixed(2)} FB:${tiltFB.toFixed(2)}  smooth LR:${smoothLR.toFixed(2)} FB:${smoothFB.toFixed(2)}  vel:${velocity.toFixed(1)}  ` +
       `device:${usingDeviceTilt}`;
   }
 }
