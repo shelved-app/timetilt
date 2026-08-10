@@ -251,8 +251,6 @@ let calibrating = false;
 let calibSamples = [];
 const CALIB_WINDOW_MS = 500;
 let calibStartTime = 0;
-const IDLE_RECENTER_RATE = 0.02; // per-frame pull toward current reading while idle
-const IDLE_THRESH = 1.0;         // below this (m/s^2-ish units) counts as "not gesturing"
 
 // zoom step debouncing (hysteresis so it doesn't flicker at the boundary)
 // units are gravity-component magnitude, roughly 0-9.8 range
@@ -439,6 +437,18 @@ function onDeviceMotion(e){
 
   tiltLR = rawLR - baselineLR;
   tiltFB = rawFB - baselineFB;
+
+  pushHistory(rawHistLR, rawLR);
+  pushHistory(rawHistFB, rawFB);
+
+  if(isStill(rawHistLR)){
+    const avg = rawHistLR.reduce((a,b)=>a+b,0) / rawHistLR.length;
+    baselineLR += (avg - baselineLR) * FAST_RECENTER;
+  }
+  if(isStill(rawHistFB)){
+    const avg = rawHistFB.reduce((a,b)=>a+b,0) / rawHistFB.length;
+    baselineFB += (avg - baselineFB) * FAST_RECENTER;
+  }
 }
 
 function recalibrate(){
@@ -446,6 +456,8 @@ function recalibrate(){
   calibrating = false;
   tiltLR = 0;
   tiltFB = 0;
+  rawHistLR = [];
+  rawHistFB = [];
 }
 
 function checkOrientation(){
@@ -482,6 +494,25 @@ function decayTo(cur, target, speed){
   return cur + d * 0.12 * speed / 3;
 }
 
+// stillness detection — "not moving" is measured by low variance in
+// recent raw readings, NOT by proximity to the current baseline. This is
+// what lets the baseline correct itself even from a large starting error.
+let rawHistLR = [];
+let rawHistFB = [];
+const STILL_WINDOW = 14;
+const STILL_RANGE = 0.55;
+const FAST_RECENTER = 0.2;
+
+function pushHistory(hist, val){
+  hist.push(val);
+  if(hist.length > STILL_WINDOW) hist.shift();
+}
+function isStill(hist){
+  if(hist.length < 8) return false;
+  const mn = Math.min(...hist), mx = Math.max(...hist);
+  return (mx - mn) < STILL_RANGE;
+}
+
 /* ============ PHYSICS: left-right tilt -> time scroll ============ */
 const DEAD_ZONE = 1.9;
 function speedForTilt(t){
@@ -505,14 +536,6 @@ function tick(dt){
   const SMOOTH = 0.22;
   smoothLR += (tiltLR - smoothLR) * SMOOTH;
   smoothFB += (tiltFB - smoothFB) * SMOOTH;
-
-  // continuously recenter the baseline toward wherever you're currently
-  // resting, but ONLY while not actively gesturing — this is what makes
-  // "if you aren't moving, it stands still" true no matter how you hold it
-  if(usingDeviceTilt && baselineReady){
-    if(Math.abs(smoothLR) < IDLE_THRESH){ baselineLR += (rawLR - baselineLR) * IDLE_RECENTER_RATE; }
-    if(Math.abs(smoothFB) < IDLE_THRESH){ baselineFB += (rawFB - baselineFB) * IDLE_RECENTER_RATE; }
-  }
 
   if(zoomLevel !== 2){
     velocity = speedForTilt(smoothLR);
