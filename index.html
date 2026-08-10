@@ -85,16 +85,15 @@
 
   /* Timeline view */
   #view-timeline{}
-  #timeline-track{position:relative; height:100%; width:100%; display:flex; align-items:center;}
+  #timeline-track{position:relative; height:100%; width:100%;}
   .photo{
-    position:absolute; top:50%; border-radius:6px; overflow:hidden;
+    position:absolute; border-radius:6px; overflow:hidden;
     box-shadow:0 1px 0 rgba(0,0,0,0.04);
     background-size:cover; background-position:center;
-    transform:translateY(-50%);
   }
   .photo .cap{position:absolute; inset:0; background:rgba(0,0,0,0.0);}
-  .date-pill{
-    position:absolute; left:50%; transform:translateX(-50%); bottom:14%;
+  .tl-date{
+    position:absolute;
     border:1px solid var(--ink); border-radius:999px; padding:5px 16px;
     font-size:13px; font-family:'Inter'; background:var(--bg); white-space:nowrap;
   }
@@ -160,7 +159,7 @@
 
   <div id="scene">
     <div class="view" id="view-grid"><div id="grid-track"></div></div>
-    <div class="view" id="view-timeline"><div id="timeline-track"><div class="date-pill" id="tl-date"></div></div></div>
+    <div class="view" id="view-timeline"><div id="timeline-track"></div></div>
     <div class="view" id="view-detail">
       <div class="detail-wrap">
         <div class="detail-photo" id="detail-photo"></div>
@@ -203,6 +202,9 @@ const captions = [
 
 const PHOTOS = [];
 const startDate = new Date(2023,8,1); // Sep 1 2023
+// deterministic landscape/portrait mix — real photos come in both, and
+// each keeps its own orientation regardless of size tier
+const orientPattern = ['portrait','portrait','landscape','portrait','landscape','portrait','landscape','landscape','portrait'];
 for(let i=0;i<26;i++){
   const d = new Date(startDate.getTime() + i*2*86400000);
   PHOTOS.push({
@@ -212,7 +214,8 @@ for(let i=0;i<26;i++){
     dateShort: d.toLocaleDateString('en-US',{month:'short', year:'2-digit'}),
     grad: grad(i),
     location: locations[i % locations.length],
-    caption: captions[i % captions.length]
+    caption: captions[i % captions.length],
+    orientation: orientPattern[i % orientPattern.length]
   });
 }
 
@@ -271,7 +274,6 @@ const rotateNudge = document.getElementById('rotate-nudge');
 const enterBtn = document.getElementById('enter-btn');
 const gateHint = document.getElementById('gate-hint');
 const track = document.getElementById('timeline-track');
-const tlDate = document.getElementById('tl-date');
 const idxLeft = document.getElementById('idx-left');
 const idxRight = document.getElementById('idx-right');
 const viewTimeline = document.getElementById('view-timeline');
@@ -629,34 +631,47 @@ function renderZoomState(){
   }
 }
 
-// Card sizing tiers pulled from the Figma design: center card is largest,
-// each ring out shrinks — cards sit edge-to-edge like a real contiguous
-// strip of photos, not independently-scaled floating cards.
-const SIZE_STOPS = [
-  {d:0, w:266, h:200},
-  {d:1, w:200, h:150},
-  {d:2, w:150, h:113},
-  {d:3, w:112, h:85},
-  {d:4, w:86,  h:65}
+// Card sizing tiers pulled from the Figma design: the LONG side of each
+// photo shrinks by ring (center=266, then 200, 150, 112, 84...), and the
+// short side is always exactly 75% of the long side — that's what keeps
+// every card a true 4:3 or 3:4 rectangle. Landscape photos put the long
+// side on width; portrait photos put it on height. Photos sit on a shared
+// baseline (bottom-aligned), not vertically centered.
+const LONG_STOPS = [
+  {d:0, v:266},
+  {d:1, v:200},
+  {d:2, v:150},
+  {d:3, v:112},
+  {d:4, v:84}
 ];
+const SHORT_RATIO = 0.75;
 const CARD_GAP = 10;
+const DATE_FADE_RANGE = 1.0; // fully faded out by 1 full photo-index away
 
-function sizeForDist(d){
+function longForDist(d){
   d = Math.abs(d);
-  const last = SIZE_STOPS[SIZE_STOPS.length-1];
-  if(d >= last.d) return {w:last.w, h:last.h};
-  for(let i=0;i<SIZE_STOPS.length-1;i++){
-    const a = SIZE_STOPS[i], b = SIZE_STOPS[i+1];
+  const last = LONG_STOPS[LONG_STOPS.length-1];
+  if(d >= last.d) return last.v;
+  for(let i=0;i<LONG_STOPS.length-1;i++){
+    const a = LONG_STOPS[i], b = LONG_STOPS[i+1];
     if(d >= a.d && d <= b.d){
       const t = (d - a.d) / (b.d - a.d);
-      return { w: a.w + (b.w-a.w)*t, h: a.h + (b.h-a.h)*t };
+      return a.v + (b.v - a.v) * t;
     }
   }
-  return {w:last.w, h:last.h};
+  return last.v;
+}
+
+function sizeForPhoto(p, d){
+  const long = longForDist(d);
+  const short = long * SHORT_RATIO;
+  return p.orientation === 'portrait'
+    ? { w: short, h: long }
+    : { w: long, h: short };
 }
 
 function renderTimeline(){
-  track.querySelectorAll('.photo').forEach(n => n.remove());
+  track.querySelectorAll('.photo, .tl-date').forEach(n => n.remove());
   const pos = timePosition;
   const base = Math.floor(pos);
   const f = pos - base;
@@ -665,10 +680,11 @@ function renderTimeline(){
   const lo = Math.max(0, base - RANGE);
   const hi = Math.min(PHOTOS.length - 1, base + RANGE + 1);
 
-  // pass 1: widths for every visible card at this instant
-  const widths = {};
+  // pass 1: widths for every visible card at this instant (each keeps its
+  // own aspect, so width alone doesn't imply height — compute both)
+  const sizes = {};
   for(let idx = lo; idx <= hi; idx++){
-    widths[idx] = sizeForDist(idx - pos).w;
+    sizes[idx] = sizeForPhoto(PHOTOS[idx], idx - pos);
   }
 
   // pass 2: cumulative left edges, contiguous strip with a fixed gap
@@ -676,39 +692,59 @@ function renderTimeline(){
   let cum = 0;
   for(let idx = lo; idx <= hi; idx++){
     leftEdge[idx] = cum;
-    cum += widths[idx] + CARD_GAP;
+    cum += sizes[idx].w + CARD_GAP;
   }
 
   // the strip-coordinate that should land at screen center — interpolated
-  // between base and base+1's left edges by the fractional scroll position
+  // between base and base+1's CENTER points (not left edges) by the
+  // fractional scroll position, so the focused photo is truly centered
   let anchor;
-  if((base) in leftEdge && (base+1) in leftEdge){
-    anchor = leftEdge[base] + f * (leftEdge[base+1] - leftEdge[base]);
-  } else if(base in leftEdge){
-    anchor = leftEdge[base];
+  const centerOf = (idx) => (idx in leftEdge) ? leftEdge[idx] + sizes[idx].w/2 : null;
+  const cA = centerOf(base);
+  const cB = centerOf(base+1);
+  if(cA !== null && cB !== null){
+    anchor = cA + f * (cB - cA);
+  } else if(cA !== null){
+    anchor = cA;
   } else {
     anchor = cum/2;
   }
 
   const W = window.innerWidth;
   const shift = W/2 - anchor;
+  const baselineY = window.innerHeight * 0.66; // shared bottom edge every photo sits on
 
   for(let idx = lo; idx <= hi; idx++){
     const p = PHOTOS[idx];
     const d = idx - pos;
-    const {w, h} = sizeForDist(d);
+    const {w, h} = sizes[idx];
+    const left = leftEdge[idx] + shift;
+
     const el = document.createElement('div');
     el.className = 'photo';
     el.style.backgroundImage = p.grad;
     el.style.width = w + 'px';
     el.style.height = h + 'px';
-    el.style.left = (leftEdge[idx] + shift) + 'px';
+    el.style.left = left + 'px';
+    el.style.top = (baselineY - h) + 'px';
     el.style.opacity = clamp(1 - Math.abs(d)*0.16, 0.35, 1);
     track.appendChild(el);
+
+    // date label at this photo's own bottom-left, fading in/out purely
+    // by how centered THIS photo currently is
+    const dateOpacity = clamp(1 - Math.abs(d)/DATE_FADE_RANGE, 0, 1);
+    if(dateOpacity > 0.01){
+      const dEl = document.createElement('div');
+      dEl.className = 'tl-date';
+      dEl.textContent = p.dateLabel;
+      dEl.style.left = left + 'px';
+      dEl.style.top = (baselineY + 10) + 'px';
+      dEl.style.opacity = dateOpacity;
+      track.appendChild(dEl);
+    }
   }
 
   const centerIdx = Math.round(pos);
-  tlDate.textContent = PHOTOS[centerIdx].dateLabel;
   idxLeft.textContent = String(Math.max(1, centerIdx));
   idxRight.textContent = String(Math.min(PHOTOS.length, centerIdx + 2));
 }
