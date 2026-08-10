@@ -488,6 +488,62 @@ function checkOrientation(){
 window.addEventListener('resize', checkOrientation);
 window.addEventListener('orientationchange', checkOrientation);
 
+/* ============ TOUCH / MOUSE DRAG (finger alternative to tilt) ============ */
+let isDragging = false;
+let dragStartX = 0;
+let dragStartPos = 0;
+let dragTotalDeltaX = 0;
+const PIXELS_PER_PHOTO = 220; // rough drag sensitivity — how many px feels like "one photo"
+const DETAIL_SWIPE_THRESHOLD = 50;
+
+function dragStart(clientX){
+  isDragging = true;
+  dragStartX = clientX;
+  dragStartPos = timePosition;
+  dragTotalDeltaX = 0;
+  idleSince = null; // don't let settle kick in mid-drag
+}
+function dragMove(clientX){
+  if(!isDragging) return;
+  const deltaX = clientX - dragStartX;
+  dragTotalDeltaX = deltaX;
+  if(zoomLevel !== 2){
+    const lastIdx = PHOTOS.length - 1;
+    // drag left = forward in time, matching tilt-left = forward
+    timePosition = clamp(dragStartPos - deltaX / PIXELS_PER_PHOTO, 0, lastIdx);
+  }
+}
+function dragEnd(){
+  if(!isDragging) return;
+  isDragging = false;
+  idleSince = null; // let the normal settle-to-nearest take over from here
+  if(zoomLevel === 2){
+    if(dragTotalDeltaX <= -DETAIL_SWIPE_THRESHOLD) stepDetailPhoto(1);
+    else if(dragTotalDeltaX >= DETAIL_SWIPE_THRESHOLD) stepDetailPhoto(-1);
+  }
+}
+
+document.addEventListener('touchstart', (e) => {
+  if(gate && !gate.classList.contains('hidden')) return;
+  dragStart(e.touches[0].clientX);
+}, {passive:true});
+document.addEventListener('touchmove', (e) => {
+  if(!isDragging) return;
+  dragMove(e.touches[0].clientX);
+}, {passive:true});
+document.addEventListener('touchend', dragEnd);
+document.addEventListener('touchcancel', dragEnd);
+
+// mouse fallback so dragging is also testable on desktop
+let mouseIsDown = false;
+document.addEventListener('mousedown', (e) => {
+  if(gate && !gate.classList.contains('hidden')) return;
+  mouseIsDown = true;
+  dragStart(e.clientX);
+});
+document.addEventListener('mousemove', (e) => { if(mouseIsDown) dragMove(e.clientX); });
+document.addEventListener('mouseup', () => { if(mouseIsDown){ mouseIsDown = false; dragEnd(); } });
+
 /* ============ KEYBOARD FALLBACK (desktop testing) ============ */
 const keys = {};
 window.addEventListener('keydown', (e) => {
@@ -559,6 +615,18 @@ function tick(dt){
   const SMOOTH = 0.22;
   smoothLR += (tiltLR - smoothLR) * SMOOTH;
   smoothFB += (tiltFB - smoothFB) * SMOOTH;
+
+  if(isDragging){
+    // a finger drag owns timePosition directly right now — don't let tilt
+    // physics or the settle-to-nearest logic fight it
+    velocity = 0;
+    const nowIndex = Math.round(timePosition);
+    if(nowIndex !== lastPassedIndex){
+      hapticTick();
+      lastPassedIndex = nowIndex;
+    }
+    return;
+  }
 
   const lastIdx = PHOTOS.length - 1;
 
