@@ -539,23 +539,42 @@ function tick(dt){
   smoothLR += (tiltLR - smoothLR) * SMOOTH;
   smoothFB += (tiltFB - smoothFB) * SMOOTH;
 
-  if(zoomLevel !== 2){
-    velocity = speedForTilt(smoothLR);
+  const lastIdx = PHOTOS.length - 1;
 
-    // soft deceleration near either end — still reaches exactly index 0 or
-    // the last photo (clamp below guarantees that), just eases into it
-    // instead of stopping abruptly, like reaching the end of a real stack
-    const EDGE_SOFTEN = 1.0; // photos-worth of distance where easing applies
-    const lastIdx = PHOTOS.length - 1;
-    if(velocity < 0){
-      const distToStart = timePosition;
-      if(distToStart < EDGE_SOFTEN) velocity *= clamp(distToStart / EDGE_SOFTEN, 0.15, 1);
-    } else if(velocity > 0){
-      const distToEnd = lastIdx - timePosition;
-      if(distToEnd < EDGE_SOFTEN) velocity *= clamp(distToEnd / EDGE_SOFTEN, 0.15, 1);
+  if(zoomLevel !== 2){
+    const rawVel = speedForTilt(smoothLR);
+
+    if(rawVel === 0){
+      // no active tilt input — settle smoothly onto the nearest whole
+      // photo instead of freezing at whatever fractional position you
+      // happened to release at. At the ends this is what makes the first/
+      // last photo actually reach true center instead of stopping short.
+      const target = Math.round(timePosition);
+      const diff = target - timePosition;
+      if(Math.abs(diff) > 0.002){
+        const SETTLE_RATE = 7; // convergence speed, photos/sec-ish
+        timePosition += diff * Math.min(1, SETTLE_RATE * dt);
+      } else {
+        timePosition = target;
+      }
+      velocity = 0;
+    } else {
+      velocity = rawVel;
+      // soft deceleration near either end — still reaches exactly index 0
+      // or the last photo (clamp guarantees that), just eases into it
+      // instead of stopping abruptly, like reaching the end of a real stack
+      const EDGE_SOFTEN = 1.0;
+      if(velocity < 0){
+        const distToStart = timePosition;
+        if(distToStart < EDGE_SOFTEN) velocity *= clamp(distToStart / EDGE_SOFTEN, 0.15, 1);
+      } else if(velocity > 0){
+        const distToEnd = lastIdx - timePosition;
+        if(distToEnd < EDGE_SOFTEN) velocity *= clamp(distToEnd / EDGE_SOFTEN, 0.15, 1);
+      }
+      timePosition = timePosition + velocity * dt;
     }
 
-    timePosition = clamp(timePosition + velocity * dt, 0, lastIdx);
+    timePosition = clamp(timePosition, 0, lastIdx);
     const nowIndex = Math.round(timePosition);
     if(nowIndex !== lastPassedIndex){
       hapticTick();
