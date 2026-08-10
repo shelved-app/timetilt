@@ -453,8 +453,14 @@ function onDeviceMotion(e){
   // tilt for scrolling looks identical to "holding still" to a variance
   // check, and this was racing to cancel out real scroll gestures.
   const aggressive = (performance.now() - baselineReadyTime) < AGGRESSIVE_RECENTER_MS;
-  const lrIdle = aggressive || Math.abs(tiltLR) < DEAD_ZONE;
-  const fbIdle = aggressive || Math.abs(tiltFB) < ZOOM_RESET;
+  // Gate on the SMOOTHED value — the same one that drives scroll velocity —
+  // not the raw instant reading. Raw can dip below the dead zone for a
+  // moment (hand micro-tremor) even while a held tilt is still actively
+  // scrolling; gating on raw let recentering sneak in during that dip and
+  // undercut a genuine sustained hold. Smoothed is always consistent with
+  // whatever speedForTilt() is actually doing right now.
+  const lrIdle = aggressive || Math.abs(smoothLR) < DEAD_ZONE;
+  const fbIdle = aggressive || Math.abs(smoothFB) < ZOOM_RESET;
 
   if(lrIdle && isStill(rawHistLR)){
     const avg = rawHistLR.reduce((a,b)=>a+b,0) / rawHistLR.length;
